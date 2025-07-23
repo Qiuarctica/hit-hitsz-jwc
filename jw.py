@@ -198,9 +198,7 @@ class HITSZAuth:
             ColorPrint.error("无法自动重连：缺少用户名或密码")
             return False
 
-        ColorPrint.warning("检测到Cookie失效，正在自动重新登录...")
         self.session = requests.Session()
-
         for attempt in range(3):
             ColorPrint.process(f"第 {attempt + 1} 次尝试重新登录...")
             if self.login(self.username, self.password):
@@ -480,7 +478,23 @@ class HITSZJwxt:
                     ColorPrint.info(
                         f"距离选课开始还有 {int(wait_seconds)} 秒，提前10秒开始..."
                     )
-
+                    # 判断是否需要长时间等待并设置重新登录时间点
+                    # 调试时使用30秒，正式环境使用5分钟(300秒)
+                    long_wait_threshold = 30  # 调试时使用，正式环境改为 300
+                    refresh_advance_seconds = 20  # 提前20秒重新登录
+                    # 重新登录一定要输入用户名和密码
+                    should_refresh = (wait_seconds > long_wait_threshold) and (
+                        self.auth.username and self.auth.password
+                    )
+                    refresh_time = (
+                        wait_seconds - refresh_advance_seconds
+                        if should_refresh
+                        else None
+                    )
+                    if should_refresh:
+                        ColorPrint.warning(
+                            f"检测到长时间等待，将在倒计时剩余 {refresh_advance_seconds} 秒时重新登录刷新Cookie"
+                        )
                     # 添加进度条
                     with tqdm(
                         total=int(wait_seconds),
@@ -491,6 +505,31 @@ class HITSZJwxt:
                         for i in range(int(wait_seconds)):
                             time.sleep(1)
                             pbar.update(1)
+                            # 检查是否需要重新登录
+                            remaining_seconds = wait_seconds - i - 1
+                            if (
+                                should_refresh
+                                and remaining_seconds == refresh_advance_seconds
+                            ):
+                                pbar.set_description(
+                                    f"{Fore.YELLOW}🔄 重新登录中{Style.RESET_ALL}"
+                                )
+                                ColorPrint.warning("开始重新登录刷新Cookie...")
+                                # 重新登录
+                                if self.auth.auto_reconnect():
+                                    ColorPrint.success("Cookie刷新成功！")
+                                    self.session = self.auth.get_session()
+                                else:
+                                    ColorPrint.error(
+                                        "Cookie刷新失败，将使用现有Cookie继续"
+                                    )
+                                pbar.set_description(
+                                    f"{Fore.CYAN}⏳ 等待中{Style.RESET_ALL}"
+                                )
+                            elif remaining_seconds <= 10 and remaining_seconds > 0:
+                                pbar.set_description(
+                                    f"{Fore.GREEN}🚀 准备就绪 {remaining_seconds}秒{Style.RESET_ALL}"
+                                )
 
                     ColorPrint.success("⏰ 选课时间到，开始执行选课！")
                 else:
@@ -584,15 +623,19 @@ def main():
     )
     class_ids = []
     if search_by_name == "y":
+        all_classes = jwxt.get_classes()
+        if not all_classes:
+            ColorPrint.error("查询课程信息失败")
+            return
+        # 打印所有课程名字
+        ColorPrint.info("所有课程信息如下：")
+        for cls in all_classes.get("kxrwList", {}).get("list", []):
+            print(f"{cls['kcmc']}: {cls['id']}")
         class_names = get_inputs("请输入课程名称（每行一个，输入空行结束）")
         if not class_names:
             ColorPrint.error("课程名称不能为空")
             return
         ColorPrint.process("查询课程信息...")
-        all_classes = jwxt.get_classes()
-        if not all_classes:
-            ColorPrint.error("查询课程信息失败")
-            return
         class_ids = jwxt.get_class_id_by_name(class_names, all_classes)
         if not class_ids:
             ColorPrint.error("未找到任何课程")
