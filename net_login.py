@@ -423,7 +423,6 @@ class HITSZNetAuth:
         return self.srun_login()
 
     def auto_reconnect(self, max_attempts=3):
-        """自动重连功能，最多尝试指定次数"""
         ColorPrint.subheader(
             f"自动重连检查 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             style="bracket",
@@ -471,14 +470,12 @@ class HITSZNetAuth:
         return False
 
     def scheduled_check(self):
-        """定时检查任务"""
         try:
             self.auto_reconnect(max_attempts=3)
         except Exception as e:
             ColorPrint.error(f"定时检查异常: {e}")
 
     def start_long_term_service(self, check_interval_hours=1):
-        """启动长期服务模式"""
         if self.long_term_mode:
             ColorPrint.warning("长期服务已在运行中")
             return
@@ -506,7 +503,6 @@ class HITSZNetAuth:
         ColorPrint.success("长期服务模式已启动")
 
     def _run_scheduler(self):
-        """运行调度器的内部方法"""
         while self.is_running:
             try:
                 schedule.run_pending()
@@ -516,7 +512,6 @@ class HITSZNetAuth:
                 time.sleep(60)
 
     def stop_long_term_service(self):
-        """停止长期服务模式"""
         if not self.long_term_mode:
             ColorPrint.warning("长期服务未在运行")
             return
@@ -533,7 +528,6 @@ class HITSZNetAuth:
         ColorPrint.success("长期服务模式已停止")
 
     def get_service_status(self):
-        """获取服务状态"""
         if self.long_term_mode:
             next_run = schedule.next_run()
             if next_run:
@@ -600,7 +594,6 @@ class HITSZNetAuth:
 
 # 添加依赖库检查
 def check_dependencies():
-    """检查必要的依赖库"""
     try:
         import schedule
     except ImportError:
