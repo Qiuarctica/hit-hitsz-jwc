@@ -6,6 +6,8 @@ import os
 import time
 from colorama import Fore, Back, Style, init
 from tqdm import tqdm
+import asyncio
+import aiohttp
 
 # 初始化colorama
 init(autoreset=True)
@@ -199,7 +201,7 @@ class HITSZAuth:
             return False
 
         self.session = requests.Session()
-        for attempt in range(3):
+        for attempt in range(5):
             ColorPrint.process(f"第 {attempt + 1} 次尝试重新登录...")
             if self.login(self.username, self.password):
                 ColorPrint.success("自动重新登录成功！")
@@ -367,91 +369,6 @@ class HITSZJwxt:
                 ColorPrint.warning(f"未找到课程: {name}")
         return class_ids
 
-    def choose_class_by_id(self, class_id):
-        url = f"{self.base_url}/Xsxk/addGouwuche"
-        headers = self.headers.copy()
-        headers.update(
-            {
-                "Accept": "*/*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": "http://jw.hitsz.edu.cn/Xsxk/query/1",
-                "rolecode": "null",
-            }
-        )
-        data = {
-            "cxsfmt": "0",
-            "p_pylx": "1",
-            "mxpylx": "1",
-            "p_sfgldjr": "0",
-            "p_sfredis": "0",
-            "p_sfsyxkgwc": "0",
-            "p_xktjz": "rwtjzyx",
-            "p_chaxunxh": "",
-            "p_gjz": "",
-            "p_skjs": "",
-            "p_xn": "2025-2026",
-            "p_xq": "1",
-            "p_xnxq": "2025-20261",
-            "p_dqxn": "2024-2025",
-            "p_dqxq": "3",
-            "p_dqxnxq": "2024-20253",
-            "p_xkfsdm": "sx-b-b",
-            "p_xiaoqu": "",
-            "p_kkyx": "",
-            "p_kclb": "",
-            "p_xkxs": "",
-            "p_dyc": "",
-            "p_kkxnxq": "",
-            "p_id": class_id,
-            "p_sfhlctkc": "1",
-            "p_sfhllrlkc": "1",
-            "p_kxsj_xqj": "",
-            "p_kxsj_ksjc": "",
-            "p_kxsj_jsjc": "",
-            "p_kcdm_js": "",
-            "p_kcdm_cxrw": "",
-            "p_kcdm_cxrw_zckc": "",
-            "p_kc_gjz": "",
-            "p_xzcxtjz_nj": "",
-            "p_xzcxtjz_yx": "",
-            "p_xzcxtjz_zy": "",
-            "p_xzcxtjz_zyfx": "",
-            "p_xzcxtjz_bj": "",
-            "p_sfxsgwckb": "1",
-            "p_skyy": "",
-            "p_chaxunxkfsdm": "",
-            "pageNum": "1",
-            "pageSize": "18",
-        }
-        try:
-            response = self._request_with_retry("POST", url, headers=headers, data=data)
-            if response and response.status_code == 200:
-                try:
-                    result = response.json()
-                    if result.get("jg") == "-1":
-                        return {
-                            "success": False,
-                            "message": result.get("message", "选课失败"),
-                        }
-                    elif result.get("code") == "500":
-                        return {"success": False, "message": "服务器内部错误"}
-                    else:
-                        return {
-                            "success": True,
-                            "message": result.get("message", "选课成功"),
-                        }
-                except:
-                    return {"success": False, "message": "选课请求已发送"}
-            else:
-                return {
-                    "success": False,
-                    "message": f"HTTP {response.status_code if response else 'None'}",
-                }
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-
-    # 等待并且提前10s开始预备选课
     def wait_for_choose_time(self, start_time):
         if start_time:
             ColorPrint.info(f"等待选课时间: {start_time}")
@@ -472,16 +389,15 @@ class HITSZJwxt:
                         -1,
                     )
                 )
-                wait_seconds = time.mktime(target_time) - time.mktime(now) - 10
+                advance = 30 # 提前30秒开始预备选课
+                wait_seconds = time.mktime(target_time) - time.mktime(now) - advance
 
                 if wait_seconds > 0:
                     ColorPrint.info(
-                        f"距离选课开始还有 {int(wait_seconds)} 秒，提前10秒开始..."
+                        f"距离选课开始还有 {int(wait_seconds)} 秒，提前{advance}秒开始..."
                     )
-                    # 判断是否需要长时间等待并设置重新登录时间点
-                    # 调试时使用30秒，正式环境使用5分钟(300秒)
-                    long_wait_threshold = 30  # 调试时使用，正式环境改为 300
-                    refresh_advance_seconds = 20  # 提前20秒重新登录
+                    long_wait_threshold = 60  
+                    refresh_advance_seconds = 40  
                     # 重新登录一定要输入用户名和密码
                     should_refresh = (wait_seconds > long_wait_threshold) and (
                         self.auth.username and self.auth.password
@@ -502,14 +418,19 @@ class HITSZJwxt:
                         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
                         colour="cyan",
                     ) as pbar:
-                        for i in range(int(wait_seconds)):
-                            time.sleep(1)
-                            pbar.update(1)
+                        target_timestamp = time.mktime(target_time) - advance
+                        refresh_done = False
+                        
+                        while True:
+                            # 实时计算剩余时间
+                            remaining_seconds = target_timestamp - time.time()
+                            if remaining_seconds <= 0:
+                                break
                             # 检查是否需要重新登录
-                            remaining_seconds = wait_seconds - i - 1
                             if (
                                 should_refresh
-                                and remaining_seconds == refresh_advance_seconds
+                                and not refresh_done
+                                and remaining_seconds <= refresh_advance_seconds
                             ):
                                 pbar.set_description(
                                     f"{Fore.YELLOW}🔄 重新登录中{Style.RESET_ALL}"
@@ -523,13 +444,27 @@ class HITSZJwxt:
                                     ColorPrint.error(
                                         "Cookie刷新失败，将使用现有Cookie继续"
                                     )
+                                refresh_done = True
                                 pbar.set_description(
                                     f"{Fore.CYAN}⏳ 等待中{Style.RESET_ALL}"
                                 )
                             elif remaining_seconds <= 10 and remaining_seconds > 0:
                                 pbar.set_description(
-                                    f"{Fore.GREEN}🚀 准备就绪 {remaining_seconds}秒{Style.RESET_ALL}"
+                                    f"{Fore.GREEN}🚀 准备就绪 {remaining_seconds:.1f}秒{Style.RESET_ALL}"
                                 )
+                            # 更新进度条
+                            elapsed = wait_seconds - remaining_seconds
+                            pbar.n = min(int(elapsed), int(wait_seconds))
+                            pbar.refresh()
+                            if remaining_seconds > 300:  # 5分钟以上
+                                sleep_time = 5.0
+                            elif remaining_seconds > 60:  # 1-5分钟
+                                sleep_time = 1.0
+                            elif remaining_seconds > 10:  # 10秒-1分钟
+                                sleep_time = 0.5
+                            else:
+                                sleep_time = 0.2
+                            time.sleep(sleep_time)
 
                     ColorPrint.success("⏰ 选课时间到，开始执行选课！")
                 else:
@@ -542,36 +477,136 @@ class HITSZJwxt:
         else:
             ColorPrint.info("立即开始选课")
 
+
     def auto_choose_class(self, choose_classes, start_time=None):
-        """自动选课"""
+        # 等待选课时间
         self.wait_for_choose_time(start_time)
-        ColorPrint.header("开始自动选课")
 
-        while choose_classes:
-            for class_id in choose_classes[:]:
-                result = self.choose_class_by_id(class_id)
+        if not choose_classes:
+            ColorPrint.error("没有课程ID可供选择")
+            return
 
-                if result["success"]:
-                    ColorPrint.success(
-                        f"课程 {class_id[:8]}... 选课成功: {result['message']}"
-                    )
-                    choose_classes.remove(class_id)
+        ColorPrint.process("开始自动选课...")
+        asyncio.run(self._async_auto_choose(choose_classes))    
+
+
+    async def _async_auto_choose(self, choose_classes):
+        completed_classes = set()
+    
+        # 获取现有cookies
+        cookies = {cookie.name: cookie.value for cookie in self.session.cookies}
+    
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            request_count = 0
+            pending_tasks = []  # 存储待处理的任务
+        
+            while len(completed_classes) < len(choose_classes):
+                # 清理已完成的任务
+                finished_tasks = []
+                for task, class_id in pending_tasks:
+                    if task.done():
+                        finished_tasks.append((task, class_id))
+            
+                for task, class_id in finished_tasks:
+                    pending_tasks.remove((task, class_id))
+                    if class_id not in completed_classes:  
+                        try:
+                            result = await task
+                            if result.get("success"):
+                                completed_classes.add(class_id)
+                                ColorPrint.success(
+                                    f"课程 {class_id[:8]}... 选课成功！: {result['message']}"
+                                )
+                            else:
+                                ColorPrint.error(
+                                    f"课程 {class_id[:8]}... 选课失败: {result['message']}"
+                                )
+                        except Exception as e:
+                            ColorPrint.warning(f"课程 {class_id[:8]}... 请求异常: {str(e)}")
+            
+                remaining_classes = [cid for cid in choose_classes if cid not in completed_classes]
+            
+                if not remaining_classes:
+                    break
+            
+                current_class = remaining_classes[request_count % len(remaining_classes)]
+                request_count += 1
+            
+                task = asyncio.create_task(
+                    self._send_course_request_simple(session, current_class)
+                )
+                pending_tasks.append((task, current_class))
+            
+                ColorPrint.info(f"第 {request_count} 次请求 - 课程 {current_class[:8]}... ")
+            
+                # 显示进度
+                ColorPrint.info(f"已完成 {len(completed_classes)}/{len(choose_classes)} 个课程，待处理任务: {len(pending_tasks)}")
+                await asyncio.sleep(1.4)
+        
+            if pending_tasks:
+                ColorPrint.info("等待剩余请求完成...")
+                for task, class_id in pending_tasks:
+                    try:
+                        result = await task
+                        if result.get("success") and class_id not in completed_classes:
+                            completed_classes.add(class_id)
+                            ColorPrint.success(
+                                f"课程 {class_id[:8]}... 选课成功！: {result['message']}"
+                            )
+                    except Exception as e:
+                        ColorPrint.warning(f"课程 {class_id[:8]}... 请求异常: {str(e)}")
+        
+            ColorPrint.success("🎉 所有课程处理完毕！")
+
+    async def _send_course_request_simple(self, session, class_id):
+        url = f"{self.base_url}/Xsxk/addGouwuche"
+        headers = {
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": "http://jw.hitsz.edu.cn/Xsxk/query/1",
+            "rolecode": "null",
+            "User-Agent": self.headers["User-Agent"]
+        }
+    
+        data = {
+            "cxsfmt": "0", "p_pylx": "1", "mxpylx": "1", "p_sfgldjr": "0",
+            "p_sfredis": "0", "p_sfsyxkgwc": "0", "p_xktjz": "rwtjzyx",
+            "p_chaxunxh": "", "p_gjz": "", "p_skjs": "", "p_xn": "2025-2026",
+            "p_xq": "1", "p_xnxq": "2025-20261", "p_dqxn": "2024-2025",
+            "p_dqxq": "3", "p_dqxnxq": "2024-20253", "p_xkfsdm": "sx-b-b",
+            "p_xiaoqu": "", "p_kkyx": "", "p_kclb": "", "p_xkxs": "",
+            "p_dyc": "", "p_kkxnxq": "", "p_id": class_id,
+            "p_sfhlctkc": "1", "p_sfhllrlkc": "1", "p_kxsj_xqj": "",
+            "p_kxsj_ksjc": "", "p_kxsj_jsjc": "", "p_kcdm_js": "",
+            "p_kcdm_cxrw": "", "p_kcdm_cxrw_zckc": "", "p_kc_gjz": "",
+            "p_xzcxtjz_nj": "", "p_xzcxtjz_yx": "", "p_xzcxtjz_zy": "",
+            "p_xzcxtjz_zyfx": "", "p_xzcxtjz_bj": "", "p_sfxsgwckb": "1",
+            "p_skyy": "", "p_chaxunxkfsdm": "", "pageNum": "1", "pageSize": "18"
+        }
+    
+        try:
+            async with session.post(url, headers=headers, data=data, timeout=15) as response:
+                if response.status == 200:
+                    try:
+                        result = await response.json()
+                        if result.get("jg") == "-1":
+                            return {"success": False, "message": result.get("message", "选课失败")}
+                        elif result.get("code") == "500":
+                            return {"success": False, "message": "服务器内部错误"}
+                        else:
+                            return {"success": True, "message": result.get("message", "选课成功")}
+                    except:
+                        return {"success": False, "message": "响应解析失败"}
                 else:
-                    ColorPrint.error(
-                        f"课程 {class_id[:8]}... 选课失败: {result['message']}"
-                    )
-
-                time.sleep(1.25)
-
-            if choose_classes:
-                ColorPrint.info(f"剩余 {len(choose_classes)} 个课程待处理")
-            else:
-                ColorPrint.success("🎉 所有课程处理完毕！")
-                break
-
+                    return {"success": False, "message": f"HTTP {response.status}"}
+                
+        except asyncio.TimeoutError:
+            return {"success": False, "message": "请求超时"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
 def main():
-    """主程序"""
     ColorPrint.header("哈尔滨工业大学（深圳）教务辅助选课工具")
 
     auth = HITSZAuth()
